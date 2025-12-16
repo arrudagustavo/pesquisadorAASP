@@ -21,6 +21,12 @@
         .progress-bar {
             transition: width 0.5s ease-in-out;
         }
+
+        /* Checkbox customizado */
+        input[type="checkbox"]:checked {
+            background-color: #2563eb;
+            border-color: #2563eb;
+        }
     </style>
 </head>
 
@@ -35,7 +41,7 @@
             <h1 class="text-3xl font-extrabold text-gray-800">Identificador AASP</h1>
         </div>
 
-        <form id="uploadForm" class="space-y-6">
+        <form id="uploadForm" class="space-y-5">
 
             <div>
                 <label class="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">1.
@@ -48,12 +54,25 @@
                         placeholder="Cole sua API Key do Gemini (Opcional)..."
                         class="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
                 </div>
-                <p class="text-xs text-gray-400 mt-1 ml-1">* Se não preencher, o sistema usará apenas o modo Python
-                    (mais rápido).</p>
+                <p class="text-[10px] text-gray-400 mt-1 ml-1">* Necessário apenas se ativar a Auditoria IA.</p>
             </div>
 
-            <div class="hidden"> <select name="model_name"
-                    class="w-full px-4 py-3 border border-gray-300 rounded-lg bg-white text-gray-700 text-sm outline-none">
+            <div
+                class="flex items-start gap-3 p-3 bg-blue-50 rounded-lg border border-blue-100 transition hover:bg-blue-100">
+                <div class="flex items-center h-5 mt-0.5">
+                    <input id="use_ai_audit" name="use_ai_audit" type="checkbox" value="true"
+                        class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 cursor-pointer">
+                </div>
+                <div class="ml-1">
+                    <label for="use_ai_audit" class="text-sm font-bold text-gray-700 cursor-pointer">Ativar Auditoria IA
+                        (Double Check)</label>
+                    <p class="text-xs text-gray-500 mt-0.5 leading-tight">O Python fará a extração principal. A IA
+                        revisará em seguida para achar o que faltou. (Mais lento, porém mais seguro).</p>
+                </div>
+            </div>
+
+            <div class="hidden">
+                <select name="model_name">
                     <option value="gemini-2.0-flash" selected>Gemini 2.0 Flash</option>
                 </select>
             </div>
@@ -61,7 +80,7 @@
             <div>
                 <label class="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">2. Arquivo</label>
                 <div id="drop-zone"
-                    class="relative border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-all hover:border-blue-400 hover:bg-gray-50 group">
+                    class="relative border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-all hover:border-blue-400 hover:bg-gray-50 group cursor-pointer">
                     <input type="file" name="file" id="file-upload" accept=".docx" required
                         class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                         onchange="updateFileName(this)">
@@ -87,15 +106,16 @@
             </button>
         </form>
 
-        <div id="status-panel" class="hidden mt-6 bg-slate-50 p-4 rounded-xl border border-slate-200">
+        <div id="status-panel" class="hidden mt-6 bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-inner">
             <div class="flex justify-between items-center mb-2">
                 <span id="status-text" class="text-sm font-bold text-slate-700">Iniciando...</span>
                 <span id="status-percent" class="text-xs font-mono text-slate-500">0%</span>
             </div>
-            <div class="w-full bg-gray-200 rounded-full h-2.5">
+            <div class="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
                 <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full progress-bar" style="width: 0%"></div>
             </div>
-            <p class="text-xs text-slate-400 mt-2 text-center animate-pulse">Processando documento...</p>
+            <p class="text-xs text-slate-400 mt-2 text-center animate-pulse">Não feche esta página enquanto processa.
+            </p>
         </div>
     </div>
 
@@ -105,27 +125,37 @@
                 document.getElementById('upload-prompt').classList.add('hidden');
                 document.getElementById('file-selected').classList.remove('hidden');
                 document.getElementById('filename-display').innerText = input.files[0].name;
-                document.getElementById('drop-zone').classList.add('border-green-300', 'bg-green-50');
+                document.getElementById('drop-zone').classList.remove('border-gray-300', 'border-dashed');
+                document.getElementById('drop-zone').classList.add('border-green-300', 'border-solid', 'bg-green-50');
             }
         }
 
         async function startProcess() {
             const form = document.getElementById('uploadForm');
             const fileInput = document.getElementById('file-upload');
+            const apiKeyInput = document.getElementById('api_key');
+            const auditCheckbox = document.getElementById('use_ai_audit');
 
             if (!fileInput.files[0]) {
-                alert("Selecione um arquivo DOCX.");
+                alert("Por favor, selecione um arquivo DOCX.");
                 return;
             }
 
-            // UI Changes
+            // Se marcar auditoria, exige API Key
+            if (auditCheckbox.checked && !apiKeyInput.value.trim()) {
+                alert("Para usar a Auditoria IA, você PRECISA preencher a API Key.");
+                return;
+            }
+
+            // Trava UI
             document.getElementById('submit-btn').disabled = true;
-            document.getElementById('submit-btn').classList.add('opacity-50', 'cursor-not-allowed');
+            document.getElementById('submit-btn').innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processando...';
+            document.getElementById('submit-btn').classList.add('opacity-75', 'cursor-not-allowed');
             document.getElementById('status-panel').classList.remove('hidden');
 
             const formData = new FormData(form);
 
-            // Inicia o Polling de Progresso (Checagem a cada 1s)
+            // Inicia checagem de progresso
             const poller = setInterval(checkProgress, 1000);
 
             try {
@@ -136,32 +166,40 @@
 
                 const result = await response.json();
 
-                clearInterval(poller); // Para de checar
+                clearInterval(poller);
 
                 if (result.status === 'success') {
                     updateUI(100, "Concluído!");
-                    // Inicia Download
+                    // Reseta botão
+                    document.getElementById('submit-btn').innerHTML = '<span>✅ Sucesso! Baixando...</span>';
+                    document.getElementById('submit-btn').classList.remove('from-blue-600', 'to-indigo-600');
+                    document.getElementById('submit-btn').classList.add('from-green-600', 'to-emerald-600');
+
+                    // Download
                     window.location.href = result.download_url;
+
                     setTimeout(() => {
-                        alert(`Sucesso! ${result.count} destaques aplicados.`);
-                        // Reset UI opcional
-                        document.getElementById('submit-btn').disabled = false;
-                        document.getElementById('submit-btn').classList.remove('opacity-50', 'cursor-not-allowed');
-                        document.getElementById('status-panel').classList.add('hidden');
-                    }, 500);
+                        alert(`Sucesso! ${result.count} termos foram identificados e grifados.`);
+                        location.reload(); // Recarrega para limpar
+                    }, 1000);
                 } else {
                     updateUI(0, "Erro!");
-                    alert("Erro: " + result.error);
-                    document.getElementById('submit-btn').disabled = false;
-                    document.getElementById('submit-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+                    alert("Erro no servidor: " + result.error);
+                    resetButton();
                 }
 
             } catch (error) {
                 clearInterval(poller);
-                alert("Erro na conexão: " + error.message);
-                document.getElementById('submit-btn').disabled = false;
-                document.getElementById('submit-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+                alert("Erro de conexão: " + error.message);
+                resetButton();
             }
+        }
+
+        function resetButton() {
+            const btn = document.getElementById('submit-btn');
+            btn.disabled = false;
+            btn.innerHTML = '<span>🚀 Iniciar Identificação</span>';
+            btn.classList.remove('opacity-75', 'cursor-not-allowed');
         }
 
         async function checkProgress() {
@@ -170,7 +208,7 @@
                 const data = await res.json();
                 updateUI(data.percent, data.message);
             } catch (e) {
-                console.log("Erro no polling", e);
+                console.log("Aguardando servidor...");
             }
         }
 
@@ -180,19 +218,19 @@
             document.getElementById('status-text').innerText = message;
         }
 
-        // Drag and Drop Effects
+        // Drag and Drop
         const zone = document.getElementById('drop-zone');
-        ['dragenter', 'dragover'].forEach(eventName => {
-            zone.addEventListener(eventName, (e) => {
+        ['dragenter', 'dragover'].forEach(evt => {
+            zone.addEventListener(evt, (e) => {
                 e.preventDefault();
                 zone.classList.add('drag-active', 'border-blue-500');
-            }, false);
+            });
         });
-        ['dragleave', 'drop'].forEach(eventName => {
-            zone.addEventListener(eventName, (e) => {
+        ['dragleave', 'drop'].forEach(evt => {
+            zone.addEventListener(evt, (e) => {
                 e.preventDefault();
                 zone.classList.remove('drag-active', 'border-blue-500');
-            }, false);
+            });
         });
     </script>
 
