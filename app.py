@@ -3,9 +3,11 @@ import re
 import json
 import time
 import zipfile
+import traceback
 from flask import Flask, render_template, request, send_file, flash, jsonify
 from werkzeug.utils import secure_filename
 from docx import Document
+from docx.shared import Pt # Importante para o tamanho da fonte
 from docx.enum.text import WD_COLOR_INDEX
 import google.generativeai as genai
 
@@ -27,14 +29,74 @@ def setup_gemini(api_key):
         genai.configure(api_key=api_key)
 
 # ==============================================================================
-# 1. SANITIZAÇÃO (Mantida igual - Essencial para o 'GLAUCIO')
+# 1. VALIDADOR V26 (COM BLOQUEIO DE OAB DE CABEÇALHO)
+# ==============================================================================
+def validate_final_term(text):
+    if not text: return False
+    t = text.strip()
+    u = t.upper()
+    
+    # Regras Básicas
+    if len(t) < 3: return False
+    if len(t) > 200: return False 
+    if re.match(r'^[0-9\-\.\/\s]+$', t): return False 
+    if re.match(r'^\d+[\.\-]\s', t): return False # Índices "1. "
+
+    # === BLOQUEIO DE CABEÇALHO ESPECÍFICO ===
+    # Bloqueia "OAB: 12345" ou apenas "OAB"
+    if u.startswith("OAB"): return False
+    
+    # Datas
+    days = ["SEGUNDA-FEIRA", "TERÇA-FEIRA", "QUARTA-FEIRA", "QUINTA-FEIRA", "SEXTA-FEIRA", "SÁBADO", "DOMINGO"]
+    for day in days:
+        if day in u: return False
+    if re.search(r'\d{1,2}\s+DE\s+[A-ZÇ]+\s+DE\s+\d{4}', u): return False
+
+    # Blocklist
+    BLOCK_PHRASES = [
+        "GERADO EM", "ASSOCIADO:", "ASSOCIADO",
+        "D J E N", "TJRJ", "TJMG", "TJSP", "STJ", "TRT",
+        "DISPONIBILIZAÇÃO", "PUBLICAÇÃO", "ARQUIVO:",
+        "DIÁRIO ELETRÔNICO", "DIÁRIO DA JUSTIÇA",
+        "TIPO DE COMUNICAÇÃO", "MEIO:", "DATA DE",
+        "PODER JUDICIÁRIO", "JUSTIÇA DE PRIMEIRA",
+        "MINISTÉRIO PÚBLICO", "DEFENSORIA PÚBLICA",
+        "ADMINISTRADORA JUDICIAL", "REPRESENTANTE DO MINISTÉRIO",
+        "VARA CÍVEL", "VARA EMPRESARIAL", "COMARCA DE", "CARTÓRIO",
+        "JUIZ DE DIREITO", "ESCRIVÃ", "DIRETOR DE SECRETARIA",
+        "CENTRAL PARA PROCEDER", "ID ", "AUTOS"
+    ]
+
+    for block in BLOCK_PHRASES:
+        if block in u: return False
+
+    EXACT_BLOCKS = ["DECISÃO", "SENTENÇA", "DESPACHO", "VISTOS", "ÓRGÃO:", "ADVOGADO(S)", "INTIMAÇÃO"]
+    if u in EXACT_BLOCKS: return False
+        
+    return True
+
+# ==============================================================================
+# 2. LEITURA
+# ==============================================================================
+def get_full_text_from_docx(doc):
+    full_text = []
+    for p in doc.paragraphs:
+        full_text.append(p.text)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    full_text.append(p.text)
+    return "\n".join(full_text)
+
+# ==============================================================================
+# 3. SANITIZAÇÃO
 # ==============================================================================
 def sanitize_docx_xml(filepath):
     try:
         with zipfile.ZipFile(filepath, 'r') as zin:
             xml_content = zin.read('word/document.xml').decode('utf-8')
 
-        # Remove tags que sujam a leitura
         xml_content = re.sub(r'<w:proofErr[^>]*/>', '', xml_content)
         xml_content = re.sub(r'<w:noBreakHyphen[^>]*/>', '', xml_content)
         xml_content = re.sub(r'<w:softHyphen[^>]*/>', '', xml_content)
@@ -56,135 +118,177 @@ def sanitize_docx_xml(filepath):
         return filepath
 
 # ==============================================================================
-# 2. EXTRATOR MECÂNICO (REGEX) - Atualizado com Agravo de Instrumento
+# 4. EXTRATOR MECÂNICO
 # ==============================================================================
 def extract_hardcoded_blocks(full_text):
     names_found = []
-    
-    # Padroniza texto
     text = full_text.replace('\r', '\n')
     
-    # 1. Captura NOMES (Blocos de Partes e Advogados)
-    # A estratégia é pegar tudo entre os rótulos conhecidos
-    partes_blocks = re.findall(r'Parte\(s\):(.*?)(?:Advogado\(s\)|Intimação|Processo:)', text, re.DOTALL | re.IGNORECASE)
-    adv_blocks = re.findall(r'Advogado\(s\)(.*?)(?:ID\s+\d+|Intimação|Processo:|Publ\.|Certifico|$)', text, re.DOTALL | re.IGNORECASE)
+    stop_markers = r'(?:Advogado\(s\)|Intimação|Processo:|Poder Judiciário|Tribunal|Data de)'
+    
+    partes_regex = rf'Parte\(s\):(.*?){stop_markers}'
+    partes_blocks = re.findall(partes_regex, text, re.DOTALL | re.IGNORECASE)
+    
+    adv_regex = rf'Advogado\(s\)(.*?)(?:ID\s+\d+|Intimação|Processo:|Publ\.|Certifico|$)'
+    adv_blocks = re.findall(adv_regex, text, re.DOTALL | re.IGNORECASE)
 
     raw_list = partes_blocks + adv_blocks
     
     for block in raw_list:
-        clean_block = block.replace('\n', ' ').strip()
-        # Quebra onde tiver "OAB" para separar advogados colados
-        parts = re.split(r'OAB\s+[A-Z]{2}-?\d+', clean_block)
-        
+        parts = re.split(r'(?:OAB\s*(?:[A-Z]{2})?-?\s*\d+|\n|;|\s{2,})', block, flags=re.IGNORECASE)
         for part in parts:
-            p = part.strip()
-            # Limpa pontuação das pontas
-            p = p.strip('.,;:-')
-            
-            # Filtros de qualidade (tamanho mínimo, não ser número puro)
-            if len(p) > 3 and not p.lower().startswith('oab') and not re.match(r'^[0-9\-\.\/\s]+$', p):
+            p = part.strip().strip('.,;:- ')
+            if validate_final_term(p):
                 names_found.append(p)
 
     return names_found
 
 def extract_processes_regex(full_text):
     processes_found = []
-    
-    # Padrão 1: CNJ Comum (0000000-00.0000.0.00.0000)
     regex_cnj = r"\d{7}[\s.-]?\d{2}[\s.]?\d{4}[\s.]?\d[\s.]?\d{2}[\s.]?\d{4}"
-    
-    # Padrão 2: Agravo de Instrumento / Numeração Antiga com Barra (1.0000.24.175224-5/004)
-    # Explicação: Sequência de dígitos e pontos, traço, digito, barra, 3 ou 4 dígitos
     regex_agravo = r"\d[\d\.]+\-\d\/\d{3,4}"
-    
-    # Padrão 3: Numeração sequencial longa (apenas segurança)
     regex_long = r"[0-9]{15,25}"
 
-    # Combina todas as buscas
-    matches_cnj = re.findall(regex_cnj, full_text)
-    matches_agravo = re.findall(regex_agravo, full_text)
-    matches_long = re.findall(regex_long, full_text)
-    
-    processes_found.extend(matches_cnj)
-    processes_found.extend(matches_agravo)
-    processes_found.extend(matches_long)
+    processes_found.extend(re.findall(regex_cnj, full_text))
+    processes_found.extend(re.findall(regex_agravo, full_text))
+    processes_found.extend(re.findall(regex_long, full_text))
     
     return processes_found
 
 # ==============================================================================
-# 3. MOTOR DE HIGHLIGHT (Reconstrução de Parágrafo)
+# 5. AUDITORIA IA
+# ==============================================================================
+def audit_missing_entities(full_text, found_names, model_name="gemini-2.0-flash"):
+    model = genai.GenerativeModel(model_name)
+    chunk_size = 30000 
+    overlap = 1000
+    chunks = []
+    start = 0
+    while start < len(full_text):
+        end = min(start + chunk_size, len(full_text))
+        chunks.append(full_text[start:end])
+        start += (chunk_size - overlap)
+
+    new_names = []
+
+    for i, chunk in enumerate(chunks):
+        local_context = [n for n in found_names if n in chunk]
+        context_str = json.dumps(local_context[:50], ensure_ascii=False)
+
+        try:
+            prompt = f"""
+            Auditor Jurídico. Extraia o que FALTOU.
+            JÁ TENHO: {context_str}
+            
+            BUSQUE: Empresas, Pessoas, Consórcios.
+            IGNORE: "Poder Judiciário", "Gerado em", "Associado", "Ministério Público", "OAB".
+
+            Retorne JSON: {{"missed": ["NOME 1"]}}
+            TEXTO: {chunk}
+            """
+            
+            response = model.generate_content(prompt, generation_config={"temperature": 0.1})
+            clean_json = response.text.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
+            
+            missed = data.get("missed", [])
+            if missed:
+                valid_missed = [n for n in missed if validate_final_term(n)]
+                new_names.extend(valid_missed)
+            
+            pct = 30 + int((i / len(chunks)) * 50)
+            update_status(f"🤖 Auditoria IA: Parte {i+1}/{len(chunks)}...", pct)
+            time.sleep(0.5)
+
+        except:
+            continue
+
+    return new_names
+
+# ==============================================================================
+# 6. MOTOR DE HIGHLIGHT V26 (PRESERVA A FONTE ORIGINAL)
 # ==============================================================================
 def apply_highlight_brute_force(doc, terms):
-    # Ordena por tamanho (Decrescente) para evitar destacar "Silva" dentro de "Silva Souza"
     terms = sorted(list(set(terms)), key=len, reverse=True)
     count = 0
     
-    for para in doc.paragraphs:
+    all_paragraphs = []
+    all_paragraphs.extend(doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                all_paragraphs.extend(cell.paragraphs)
+
+    for para in all_paragraphs:
         original_text = para.text
         original_text_lower = original_text.lower()
         
-        # Verifica se algum termo está neste parágrafo
         found_terms_in_para = []
         for term in terms:
             if term.lower() in original_text_lower:
                 found_terms_in_para.append(term)
         
-        if not found_terms_in_para:
-            continue
+        if not found_terms_in_para: continue
 
-        # Se achou, vamos reconstruir o parágrafo
-        # Mapeia onde estão os destaques: (início, fim)
         highlights_map = []
         for term in found_terms_in_para:
             start = 0
             while True:
                 idx = original_text_lower.find(term.lower(), start)
-                if idx == -1:
-                    break
+                if idx == -1: break
                 
-                # Checa colisão com destaques já marcados
                 is_overlap = False
                 for h_start, h_end in highlights_map:
-                    # Se o novo termo começa dentro ou termina dentro de um existente
                     if (idx >= h_start and idx < h_end) or (idx + len(term) > h_start and idx + len(term) <= h_end):
                         is_overlap = True
                         break
-                    # Se o novo termo engloba totalmente um existente (remove o menor)
                     if idx <= h_start and (idx + len(term)) >= h_end:
                         highlights_map.remove((h_start, h_end))
-                        is_overlap = False # Agora não é overlap, é substituição
+                        is_overlap = False 
                         break
                 
                 if not is_overlap:
                     highlights_map.append((idx, idx + len(term)))
                     count += 1
-                
                 start = idx + 1
         
-        if not highlights_map:
-            continue
-            
+        if not highlights_map: continue
         highlights_map.sort()
         
-        # Reconstrói o parágrafo visualmente
+        # === CAPTURA DE FONTE ORIGINAL ===
+        # Tenta pegar a fonte do primeiro run do parágrafo
+        font_name = None
+        font_size = None
+        if para.runs:
+            font_name = para.runs[0].font.name
+            font_size = para.runs[0].font.size
+        # =================================
+
         para.clear()
         current_cursor = 0
         
         for start, end in highlights_map:
-            # Texto normal antes do destaque
+            # Texto Normal Antes
             if start > current_cursor:
-                para.add_run(original_text[current_cursor:start])
+                run = para.add_run(original_text[current_cursor:start])
+                if font_name: run.font.name = font_name
+                if font_size: run.font.size = font_size
             
-            # Texto Destacado
+            # Texto Grifado
             run = para.add_run(original_text[start:end])
             run.font.highlight_color = WD_COLOR_INDEX.YELLOW
             run.font.bold = True
+            # Reaplica a fonte original também no texto grifado
+            if font_name: run.font.name = font_name
+            if font_size: run.font.size = font_size
             
             current_cursor = end
             
-        # Resto do texto
+        # Texto Normal Depois
         if current_cursor < len(original_text):
-            para.add_run(original_text[current_cursor:])
+            run = para.add_run(original_text[current_cursor:])
+            if font_name: run.font.name = font_name
+            if font_size: run.font.size = font_size
             
     return count
 
@@ -195,51 +299,56 @@ def progress():
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
-        # API Key é opcional agora se o documento for padrão AASP
         api_key = request.form.get('api_key')
+        use_ai_audit = request.form.get('use_ai_audit') == 'true'
         file = request.files.get('file')
 
-        if not file:
-            return jsonify({"error": "Envie um arquivo"}), 400
+        if not file: return jsonify({"error": "Envie um arquivo"}), 400
 
         try:
-            setup_gemini(api_key)
+            if api_key: setup_gemini(api_key)
+            
             filename = secure_filename(file.filename)
             filepath = os.path.join(UPLOAD_FOLDER, filename)
             file.save(filepath)
 
-            # 1. SANITIZAÇÃO (Crucial para nomes quebrados)
-            update_status("Higienizando XML do Word...", 10)
+            update_status("Sanitizando XML...", 5)
             clean_filepath = sanitize_docx_xml(filepath)
             
             doc = Document(clean_filepath)
-            full_text = "\n".join([p.text for p in doc.paragraphs])
+            update_status("Lendo documento...", 10)
+            full_text = get_full_text_from_docx(doc)
 
-            # 2. EXTRAÇÃO 100% PYTHON (Mais rápida e precisa para AASP)
-            update_status("Extraindo Nomes e Processos (Modo Turbo Python)...", 30)
-            
-            # Pega nomes via Regex Estrutural
+            update_status("Extraindo dados...", 20)
             names_found = extract_hardcoded_blocks(full_text)
-            
-            # Pega processos via Regex Matemático (Incluindo Agravo)
             processes_found = extract_processes_regex(full_text)
             
-            # Adiciona termos manuais
             names_found.append("EDUARDO TAKEMI DUTRA DOS SANTOS KATAOKA")
             names_found.append("EDUARDO TAKEMI KATAOKA")
+
+            if use_ai_audit and api_key:
+                update_status("Auditoria IA...", 30)
+                base_list = list(set(names_found))
+                extra_names = audit_missing_entities(full_text, base_list)
+                if extra_names:
+                    names_found.extend(extra_names)
+                    update_status(f"IA: +{len(extra_names)} nomes.", 80)
+            else:
+                update_status("Processando...", 80)
+
+            all_raw = list(set(names_found + processes_found))
             
-            # Junta tudo
-            all_terms = list(set(names_found + processes_found))
-            
-            # (Opcional) Se tiver API Key e quiser usar IA para limpar mais ainda, poderia chamar aqui
-            # Mas como o usuário disse que ficou rápido e bom, vamos confiar no Python.
-            
-            update_status(f"Aplicando destaque em {len(all_terms)} termos...", 70)
-            
+            all_terms = []
+            for t in all_raw:
+                if re.match(r'^\d', t) or validate_final_term(t):
+                    all_terms.append(t)
+
+            update_status(f"Grifando {len(all_terms)} termos...", 90)
             count = apply_highlight_brute_force(doc, all_terms)
             
-            update_status("Salvando arquivo...", 90)
-            output_filename = f"FINAL_{filename}"
+            update_status("Salvando...", 98)
+            base_name = filename.replace('.docx', '')
+            output_filename = f"GRIFADO_{base_name}_{int(time.time())}.docx"
             output_path = os.path.join(UPLOAD_FOLDER, output_filename)
             doc.save(output_path)
             
@@ -247,6 +356,7 @@ def index():
             return jsonify({"status": "success", "download_url": f"/download/{output_filename}", "count": count})
 
         except Exception as e:
+            traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
     return render_template('index.html')
