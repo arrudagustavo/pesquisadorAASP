@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Identificador AASP</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #f3f4f6;
+        }
+
+        .drag-active {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+
+        .progress-bar {
+            transition: width 0.5s ease-in-out;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white p-8 rounded-2xl shadow-xl w-full max-w-lg border border-gray-100">
+
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-blue-100 text-blue-600 mb-4">
+                <i class="fas fa-balance-scale text-2xl"></i>
+            </div>
+            <h1 class="text-3xl font-extrabold text-gray-800">Identificador AASP</h1>
+        </div>
+
+        <form id="uploadForm" class="space-y-6">
+
+            <div>
+                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">1.
+                    Configuração</label>
+                <div class="relative">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                        <i class="fas fa-key"></i>
+                    </div>
+                    <input type="password" id="api_key" name="api_key"
+                        placeholder="Cole sua API Key do Gemini (Opcional)..."
+                        class="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                </div>
+                <p class="text-xs text-gray-400 mt-1 ml-1">* Se não preencher, o sistema usará apenas o modo Python
+                    (mais rápido).</p>
+            </div>
+
+            <div class="hidden"> <select name="model_name"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg bg-white text-gray-700 text-sm outline-none">
+                    <option value="gemini-2.0-flash" selected>Gemini 2.0 Flash</option>
+                </select>
+            </div>
+
+            <div>
+                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">2. Arquivo</label>
+                <div id="drop-zone"
+                    class="relative border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-all hover:border-blue-400 hover:bg-gray-50 group">
+                    <input type="file" name="file" id="file-upload" accept=".docx" required
+                        class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        onchange="updateFileName(this)">
+
+                    <div id="upload-prompt" class="space-y-2">
+                        <div class="text-4xl text-gray-300 group-hover:text-blue-400 transition-colors"><i
+                                class="fas fa-cloud-upload-alt"></i></div>
+                        <h3 class="text-gray-700 font-medium group-hover:text-blue-600">Clique para selecionar</h3>
+                        <p class="text-xs text-gray-400">Arquivos .DOCX da AASP</p>
+                    </div>
+
+                    <div id="file-selected" class="hidden space-y-2">
+                        <div class="text-4xl text-green-500 mb-2"><i class="fas fa-check-circle"></i></div>
+                        <p id="filename-display" class="text-gray-800 font-bold text-sm break-all"></p>
+                        <p class="text-xs text-green-600 font-semibold">Pronto para processar</p>
+                    </div>
+                </div>
+            </div>
+
+            <button type="button" onclick="startProcess()" id="submit-btn"
+                class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold py-4 rounded-xl shadow-lg transition transform hover:scale-[1.02] flex items-center justify-center gap-2">
+                <span>🚀 Iniciar Identificação</span>
+            </button>
+        </form>
+
+        <div id="status-panel" class="hidden mt-6 bg-slate-50 p-4 rounded-xl border border-slate-200">
+            <div class="flex justify-between items-center mb-2">
+                <span id="status-text" class="text-sm font-bold text-slate-700">Iniciando...</span>
+                <span id="status-percent" class="text-xs font-mono text-slate-500">0%</span>
+            </div>
+            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full progress-bar" style="width: 0%"></div>
+            </div>
+            <p class="text-xs text-slate-400 mt-2 text-center animate-pulse">Processando documento...</p>
+        </div>
+    </div>
+
+    <script>
+        function updateFileName(input) {
+            if (input.files && input.files[0]) {
+                document.getElementById('upload-prompt').classList.add('hidden');
+                document.getElementById('file-selected').classList.remove('hidden');
+                document.getElementById('filename-display').innerText = input.files[0].name;
+                document.getElementById('drop-zone').classList.add('border-green-300', 'bg-green-50');
+            }
+        }
+
+        async function startProcess() {
+            const form = document.getElementById('uploadForm');
+            const fileInput = document.getElementById('file-upload');
+
+            if (!fileInput.files[0]) {
+                alert("Selecione um arquivo DOCX.");
+                return;
+            }
+
+            // UI Changes
+            document.getElementById('submit-btn').disabled = true;
+            document.getElementById('submit-btn').classList.add('opacity-50', 'cursor-not-allowed');
+            document.getElementById('status-panel').classList.remove('hidden');
+
+            const formData = new FormData(form);
+
+            // Inicia o Polling de Progresso (Checagem a cada 1s)
+            const poller = setInterval(checkProgress, 1000);
+
+            try {
+                const response = await fetch('/', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                clearInterval(poller); // Para de checar
+
+                if (result.status === 'success') {
+                    updateUI(100, "Concluído!");
+                    // Inicia Download
+                    window.location.href = result.download_url;
+                    setTimeout(() => {
+                        alert(`Sucesso! ${result.count} destaques aplicados.`);
+                        // Reset UI opcional
+                        document.getElementById('submit-btn').disabled = false;
+                        document.getElementById('submit-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+                        document.getElementById('status-panel').classList.add('hidden');
+                    }, 500);
+                } else {
+                    updateUI(0, "Erro!");
+                    alert("Erro: " + result.error);
+                    document.getElementById('submit-btn').disabled = false;
+                    document.getElementById('submit-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+
+            } catch (error) {
+                clearInterval(poller);
+                alert("Erro na conexão: " + error.message);
+                document.getElementById('submit-btn').disabled = false;
+                document.getElementById('submit-btn').classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        async function checkProgress() {
+            try {
+                const res = await fetch('/progress');
+                const data = await res.json();
+                updateUI(data.percent, data.message);
+            } catch (e) {
+                console.log("Erro no polling", e);
+            }
+        }
+
+        function updateUI(percent, message) {
+            document.getElementById('progress-bar').style.width = percent + '%';
+            document.getElementById('status-percent').innerText = percent + '%';
+            document.getElementById('status-text').innerText = message;
+        }
+
+        // Drag and Drop Effects
+        const zone = document.getElementById('drop-zone');
+        ['dragenter', 'dragover'].forEach(eventName => {
+            zone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                zone.classList.add('drag-active', 'border-blue-500');
+            }, false);
+        });
+        ['dragleave', 'drop'].forEach(eventName => {
+            zone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                zone.classList.remove('drag-active', 'border-blue-500');
+            }, false);
+        });
+    </script>
+
+</body>
+
+</html>
