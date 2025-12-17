@@ -25,7 +25,7 @@ def update_status(msg, percent):
     current_status["percent"] = percent
 
 # ==============================================================================
-# 1. VALIDADOR V68
+# 1. VALIDADOR V73
 # ==============================================================================
 def validate_final_term(text):
     if not text: return False
@@ -41,6 +41,7 @@ def validate_final_term(text):
 
     # Pontuação inicial
     if t.startswith(('/', '-', '.', ',', ':')): return False
+    # Siglas soltas
     if re.match(r'^[\W_]*[A-Z]{2}[\W_]*$', u): return False
 
     # Números soltos
@@ -75,24 +76,25 @@ def validate_final_term(text):
     for block in BLOCK_PHRASES:
         if block in u: return False
 
-    EXACT_BLOCKS = ["DECISÃO", "SENTENÇA", "DESPACHO", "VISTOS", "ÓRGÃO:", "ADVOGADO(S)", "INTIMAÇÃO", "PARTE(S):", "ADVOGADOS", "ADVOGADO", "RECORRENTE", "RECORRIDO", "AGRAVANTE", "AGRAVADO", "AUTOR", "RÉU", "EXECUTADO", "EXEQUENTE", "IMPETRANTE", "IMPETRADO", "IMPUGNANTE", "IMPUGNADO"]
+    EXACT_BLOCKS = ["DECISÃO", "SENTENÇA", "DESPACHO", "VISTOS", "ÓRGÃO:", "ADVOGADO(S)", "INTIMAÇÃO", "PARTE(S):", "ADVOGADOS", "ADVOGADO", "RECORRENTE", "RECORRIDO", "AGRAVANTE", "AGRAVADO", "AUTOR", "RÉU", "EXECUTADO", "EXEQUENTE", "IMPETRANTE", "IMPETRADO", "IMPUGNANTE", "IMPUGNADO", "REQUERENTE", "REQUERIDO", "POLO ATIVO", "POLO PASSIVO", "POLO", "PASSIVO"]
     if u in EXACT_BLOCKS: return False
         
     return True
 
 # ==============================================================================
-# 2. GUARDA DE SINTAXE (ATUALIZADA)
+# 2. GUARDA DE SINTAXE
 # ==============================================================================
 def is_valid_start(text):
     if not text: return False
     
-    # Lista proibida de inícios (CONECTIVOS)
-    # Adicionado: "outro", "outros", "pelo"
+    # Palavras proibidas no INÍCIO do nome (Conectivos)
     forbidden = [
-        "para", "que", "de", "do", "da", "e", "a", "à", "ao", 
-        "na", "no", "em", "com", "por", "pelo", "pela", "pelos", "pelas",
-        "sob", "tal", "como", "quando", "se", "houver", "onde", 
-        "outro", "outros", "outra"
+        "para", "que", "de", "do", "da", "dos", "das", 
+        "e", "a", "à", "ao", "aos", "o", "os", "as",
+        "na", "no", "nas", "nos", "ne", "nesta", "neste",
+        "em", "com", "por", "pelo", "pela", "pelos", "pelas",
+        "sob", "sobre", "tal", "como", "quando", "se", "houver", "onde", 
+        "outro", "outra", "outras", "to"
     ]
     
     first_word = text.strip().split(' ')[0].lower()
@@ -126,7 +128,7 @@ def sanitize_docx_xml(filepath):
     except: return filepath
 
 # ==============================================================================
-# 4. EXTRATOR V68
+# 4. EXTRATOR V73 (MK_PARTES AS STOP WORD + FUNDO SUPPORT)
 # ==============================================================================
 def process_document_by_publication(doc):
     all_paras = []
@@ -169,25 +171,31 @@ def process_single_publication(text_lines, paragraphs):
     full_text = re.sub(r'[^\w\s\.\-\/\(\),:]', ' ', full_text)
 
     # 3. Injeção de Espaços (Anti-Cola)
-    keywords = ["Advogado", "Advogada", "OAB", "Relator", "Juiz", "Poder Judiciário", "Intimação", "Processo:"]
+    keywords = ["Advogado", "Advogada", "OAB", "Relator", "Juiz", "Poder Judiciário", "Intimação", "Processo:", "Adv:", "Adv -"]
     for kw in keywords:
         full_text = re.sub(rf'(\S)({kw})', r'\1 \2', full_text, flags=re.IGNORECASE)
 
-    # 4. Normalização de Cabeçalhos e Papéis
-    # Padroniza "Parte(s):"
-    full_text = re.sub(r'Parte\s*\(?s\)?\s*:', 'MK_PARTES:', full_text, flags=re.IGNORECASE)
-    full_text = re.sub(r'POLO ATIVO\s*:', 'MK_PARTES:', full_text, flags=re.IGNORECASE)
-    full_text = re.sub(r'POLO PASSIVO\s*:', 'MK_PARTES:', full_text, flags=re.IGNORECASE)
-    full_text = re.sub(r'DESTINATÁRIO\(S\)\s*:', 'MK_PARTES:', full_text, flags=re.IGNORECASE)
+    # 4. NORMALIZAÇÃO DE CABEÇALHOS E PAPÉIS
     
-    # Padroniza "Impugnado(a):", "Impugnante :", etc. para um formato limpo
+    # Substitui "Parte(s):", "Polo Ativo:", "Polo Passivo:", "Polo:", "Passivo:" por MK_PARTES:
+    regex_polos = r'(?:Parte\s*\(?s\)?|Polo\s+Ativo|Polo\s+Passivo|Polo|Passivo|Destinatário\s*\(?s\)?)\s*:'
+    full_text = re.sub(regex_polos, 'MK_PARTES:', full_text, flags=re.IGNORECASE)
+    
+    # Normaliza Papéis Específicos
     full_text = re.sub(r'Impugnante\s*:', 'Impugnante:', full_text, flags=re.IGNORECASE)
-    # A regex abaixo pega Impugnado, Impugnada, Impugnado(a), com ou sem espaço antes dos dois pontos
     full_text = re.sub(r'Impugnad[oa]\s*\(?a?\)?\s*:', 'Impugnado:', full_text, flags=re.IGNORECASE)
+    full_text = re.sub(r'Requerente\s*:', 'Requerente:', full_text, flags=re.IGNORECASE)
+    full_text = re.sub(r'Requerid[oa]\s*\(?a?\)?\s*:', 'Requerido:', full_text, flags=re.IGNORECASE)
     
     terms_to_highlight = []
     
-    stop_words_list = ["Advogado", "Advogada", "OAB", "Juiz", "Relator", "Processo:", "Intimação", "Data de", "DECISÃO", "SENTENÇA", "DESPACHO", "AGRAVO", "Vistos"]
+    # === STOP WORDS ATUALIZADAS (V73) ===
+    # ADICIONADO: MK_PARTES (para um polo não engolir o outro) e Parte intimação (TRF1)
+    stop_words_list = [
+        "Advogado", "Advogada", "OAB", "Juiz", "Relator", "Processo:", 
+        "Intimação", "Data de", "DECISÃO", "SENTENÇA", "DESPACHO", "AGRAVO", "Vistos", 
+        "Adv:", "Adv -", "Adv.", "MK_PARTES", "Parte intimação", "Parte Intimação"
+    ]
 
     def extract_between_markers(start_marker, text_source):
         results = []
@@ -203,7 +211,7 @@ def process_single_publication(text_lines, paragraphs):
             min_stop = len(text_source)
             for sw in stop_words_list:
                 sw_idx = text_upper.find(sw.upper(), content_start)
-                if sw_idx != -1 and sw_idx < min_stop:
+                if sw_idx != -1 and sw_idx > content_start and sw_idx < min_stop:
                     min_stop = sw_idx
             
             # Stop extra para OAB genérica
@@ -214,27 +222,28 @@ def process_single_publication(text_lines, paragraphs):
                     min_stop = abs_oab_idx
 
             chunk = text_source[content_start:min_stop].strip()
+            chunk = chunk.rstrip('.,-:')
+            
             if chunk: results.append(chunk)
             start_idx = min_stop
             
         return results
 
-    # A. Partes
+    # A. Partes (MK_PARTES cobre Polo, Passivo, etc.)
     partes_chunks = extract_between_markers("MK_PARTES:", full_text)
     for chunk in partes_chunks:
         if "SIGILO" in chunk.upper(): terms_to_highlight.append("SIGILO")
         corporate_shredder(chunk, terms_to_highlight)
 
-    # B. Papéis (ADICIONADO IMPUGNANTE E IMPUGNADO)
+    # B. Papéis Específicos
     roles = [
         "Recorrente", "Recorrido", "Interessado", "Impetrante", "Impetrado",
         "Exequente", "Executado", "Agravante", "Agravado", 
-        "Autor", "Réu", "Apelante", "Apelado", "Requerente", "Requerido",
+        "Autor", "Réu", "Apelante", "Apelado", 
         "Embargante", "Embargado", "Litisconsorte", "Representante", "Suscitante", "Suscitado",
-        "Impugnante", "Impugnado"
+        "Impugnante", "Impugnado", "Requerente", "Requerido"
     ]
     for role in roles:
-        # Busca o papel já normalizado (sem espaços extras antes dos dois pontos)
         chunks = extract_between_markers(f"{role}:", full_text)
         for chunk in chunks:
             if is_valid_start(chunk):
@@ -257,9 +266,20 @@ def process_single_publication(text_lines, paragraphs):
 def corporate_shredder(text_block, target_list):
     if not text_block: return
 
-    corp_suf = r'(LTDA|S[\.\/]?A\.?|EIRELI|LIMITADA|S\.S\.?|S\/C|ADVOCACIA|PARTICIPA[ÇC][ÕO]ES)'
+    # Adicionado FUNDO/CLUBE DE INVESTIMENTO
+    corp_suf = r'(LTDA|S[\.\/]?A\.?|EIRELI|LIMITADA|S\.S\.?|S\/C|ADVOCACIA|PARTICIPA[ÇC][ÕO]ES|FUNDO|INVESTIMENTO)'
+    
+    # 1. Quebra após sufixos
     text_block = re.sub(rf'\b({corp_suf})(?:[\.\s,]*)(?:ME|EPP|EM\s+RECUPERA[ÇC][ÃA]O\s+JUDICIAL)?(?:[\.\s,]+|$)', r'\1 ### ', text_block, flags=re.IGNORECASE)
+    
+    # 2. Quebra após CAIXA
     text_block = re.sub(r'(FEDERAL)\s+(?=[A-Z])', r'\1 ### ', text_block, flags=re.IGNORECASE)
+    
+    # 3. Quebra por BARRAS (/) preservando S/A e S/C
+    text_block = re.sub(r'S/A', 'S_A_TEMP', text_block, flags=re.IGNORECASE)
+    text_block = re.sub(r'S/C', 'S_C_TEMP', text_block, flags=re.IGNORECASE)
+    text_block = text_block.replace('/', ' ### ')
+    text_block = text_block.replace('S_A_TEMP', 'S/A').replace('S_C_TEMP', 'S/C')
 
     parts = re.split(r'(?:;|###)', text_block)
     
@@ -284,9 +304,11 @@ def apply_highlight_reconstructor(paragraphs, terms):
         original_text = para.text
         if not original_text: continue
         
+        # Sincronia com o Extrator
         clean_text_search = re.sub(r'[^\w\s\.\-\/\(\),:]', ' ', original_text)
         clean_text_search = re.sub(r'\s+', ' ', clean_text_search)
-        keywords = ["Advogado", "Advogada", "OAB", "Relator", "Juiz", "Poder Judiciário", "Intimação", "Processo:"]
+        
+        keywords = ["Advogado", "Advogada", "OAB", "Relator", "Juiz", "Poder Judiciário", "Intimação", "Processo:", "Adv:", "Adv -"]
         for kw in keywords:
             clean_text_search = re.sub(rf'(\S)({kw})', r'\1 \2', clean_text_search, flags=re.IGNORECASE)
         
