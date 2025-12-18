@@ -25,7 +25,7 @@ def update_status(msg, percent):
     current_status["percent"] = percent
 
 # ==============================================================================
-# 1. VALIDADOR V75
+# 1. VALIDADOR V76
 # ==============================================================================
 def validate_final_term(text):
     if not text: return False
@@ -128,7 +128,7 @@ def sanitize_docx_xml(filepath):
     except: return filepath
 
 # ==============================================================================
-# 4. EXTRATOR V75 (HYPHEN HANDLER)
+# 4. EXTRATOR V76 (ABBREVIATION MASTER)
 # ==============================================================================
 def process_document_by_publication(doc):
     all_paras = []
@@ -175,28 +175,42 @@ def process_single_publication(text_lines, paragraphs):
     for kw in keywords:
         full_text = re.sub(rf'(\S)({kw})', r'\1 \2', full_text, flags=re.IGNORECASE)
 
-    # 4. NORMALIZAÇÃO DE CABEÇALHOS E PAPÉIS
+    # 4. NORMALIZAÇÃO DE CABEÇALHOS E PAPÉIS (A LISTA COMPLETA)
     
     # MK_PARTES
     regex_polos = r'(?:Parte\s*\(?s\)?|Polo\s+Ativo|Polo\s+Passivo|Polo|Passivo|Destinatário\s*\(?s\)?)\s*:'
     full_text = re.sub(regex_polos, 'MK_PARTES:', full_text, flags=re.IGNORECASE)
     
-    # === NORMALIZAÇÃO COM HIFEN OU DOIS PONTOS ===
-    # O padrão [:\-] aceita tanto dois pontos quanto hífen como separador
+    # --- PADRONIZAÇÃO DE ABREVIAÇÕES E VARIAÇÕES ---
+    # Aceita dois pontos (:) ou hífen (-) como separador
     
-    # Impugnante/Impugnado
+    # Impugnante / Impugnado
     full_text = re.sub(r'Impugnante\s*[:\-]', 'Impugnante:', full_text, flags=re.IGNORECASE)
     full_text = re.sub(r'Impugnad[oa]\s*\(?a?\)?\s*[:\-]', 'Impugnado:', full_text, flags=re.IGNORECASE)
     
-    # Requerente/Requerido
-    full_text = re.sub(r'Requerente\s*[:\-]', 'Requerente:', full_text, flags=re.IGNORECASE)
-    full_text = re.sub(r'Requerid[oa]\s*\(?a?\)?\s*[:\-]', 'Requerido:', full_text, flags=re.IGNORECASE)
+    # Requerente (Reqte) / Requerido (Reqdo)
+    # Pega: Requerente, Reqte, Reqte.
+    full_text = re.sub(r'(?:Requerente|Reqte)[\.\s]*[:\-]', 'Requerente:', full_text, flags=re.IGNORECASE)
+    # Pega: Requerido, Requerida, Reqdo, Reqda, Reqdo.
+    full_text = re.sub(r'(?:Requerid[oa]|Reqd[oa])[\.\s]*\(?a?\)?\s*[:\-]', 'Requerido:', full_text, flags=re.IGNORECASE)
     
-    # Agravante/Agravado (Com suporte a plurais e hifens)
+    # Exequente (Exeqte) / Executado (Exectdo)
+    full_text = re.sub(r'(?:Exequente|Exeq[uü]ente|Exeqte)[\.\s]*[:\-]', 'Exequente:', full_text, flags=re.IGNORECASE)
+    full_text = re.sub(r'(?:Executad[oa]|Exectd[oa])[\.\s]*\(?a?\)?\s*[:\-]', 'Executado:', full_text, flags=re.IGNORECASE)
+    
+    # Autor / Réu
+    full_text = re.sub(r'Autor(?:[as]|es)?\s*[:\-]', 'Autor:', full_text, flags=re.IGNORECASE)
+    full_text = re.sub(r'R[ée]u(?:s)?\s*[:\-]', 'Réu:', full_text, flags=re.IGNORECASE)
+    
+    # Suscitante / Suscitado
+    full_text = re.sub(r'Suscitante\s*[:\-]', 'Suscitante:', full_text, flags=re.IGNORECASE)
+    full_text = re.sub(r'Suscitad[oa]\s*\(?a?\)?\s*[:\-]', 'Suscitado:', full_text, flags=re.IGNORECASE)
+    
+    # Agravante / Agravado
     full_text = re.sub(r'Agravante\s*\(?s?\)?\s*[:\-]', 'Agravante:', full_text, flags=re.IGNORECASE)
     full_text = re.sub(r'Agravad[oa]\s*\(?a?\)?\s*\(?s?\)?\s*[:\-]', 'Agravado:', full_text, flags=re.IGNORECASE)
     
-    # Apelante/Apelado
+    # Apelante / Apelado
     full_text = re.sub(r'Apelante\s*\(?s?\)?\s*[:\-]', 'Apelante:', full_text, flags=re.IGNORECASE)
     full_text = re.sub(r'Apelad[oa]\s*\(?a?\)?\s*\(?s?\)?\s*[:\-]', 'Apelado:', full_text, flags=re.IGNORECASE)
     
@@ -247,7 +261,7 @@ def process_single_publication(text_lines, paragraphs):
         if "SIGILO" in chunk.upper(): terms_to_highlight.append("SIGILO")
         corporate_shredder(chunk, terms_to_highlight)
 
-    # B. Papéis Específicos
+    # B. Papéis Específicos (COM A LISTA EXPANDIDA)
     roles = [
         "Recorrente", "Recorrido", "Interessado", "Impetrante", "Impetrado",
         "Exequente", "Executado", "Agravante", "Agravado", 
@@ -280,13 +294,9 @@ def corporate_shredder(text_block, target_list):
 
     corp_suf = r'(LTDA|S[\.\/]?A\.?|EIRELI|LIMITADA|S\.S\.?|S\/C|ADVOCACIA|PARTICIPA[ÇC][ÕO]ES|FUNDO|INVESTIMENTO)'
     
-    # 1. Quebra
     text_block = re.sub(rf'\b({corp_suf})(?:[\.\s,]*)(?:ME|EPP|EM\s+RECUPERA[ÇC][ÃA]O\s+JUDICIAL)?(?:[\.\s,]+|$)', r'\1 ### ', text_block, flags=re.IGNORECASE)
-    
-    # 2. CAIXA
     text_block = re.sub(r'(FEDERAL)\s+(?=[A-Z])', r'\1 ### ', text_block, flags=re.IGNORECASE)
     
-    # 3. Barras
     text_block = re.sub(r'S/A', 'S_A_TEMP', text_block, flags=re.IGNORECASE)
     text_block = re.sub(r'S/C', 'S_C_TEMP', text_block, flags=re.IGNORECASE)
     text_block = text_block.replace('/', ' ### ')
@@ -315,7 +325,6 @@ def apply_highlight_reconstructor(paragraphs, terms):
         original_text = para.text
         if not original_text: continue
         
-        # Sincronia
         clean_text_search = re.sub(r'[^\w\s\.\-\/\(\),:]', ' ', original_text)
         clean_text_search = re.sub(r'\s+', ' ', clean_text_search)
         
